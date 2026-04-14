@@ -433,11 +433,21 @@ function getOrCreatePlayer(videoItem) {
       const ytStart = videoItem.startTime || 0;
       let ytPlayer = null;
       let ready = false;
+      let initialSeekDone = false;
       let pendingCmds = [];
 
       const whenReady = (fn) => {
         if (ready && ytPlayer) fn(ytPlayer);
         else pendingCmds.push(fn);
+      };
+
+      const styleIframe = () => {
+        const iframe = wrapper.querySelector('iframe');
+        if (iframe) {
+          iframe.style.width = '100%';
+          iframe.style.height = '100%';
+          iframe.style.border = '0';
+        }
       };
 
       const tryInit = () => {
@@ -463,18 +473,23 @@ function getOrCreatePlayer(videoItem) {
             events: {
               onReady: () => {
                 ready = true;
-                const iframe = wrapper.querySelector('iframe');
-                if (iframe) {
-                  iframe.style.width = '100%';
-                  iframe.style.height = '100%';
-                  iframe.style.border = '0';
-                }
+                styleIframe();
+                // Try seeking immediately
                 if (ytStart > 0) {
                   ytPlayer.seekTo(ytStart, true);
                   ytPlayer.playVideo();
                 }
                 for (const fn of pendingCmds) fn(ytPlayer);
                 pendingCmds = [];
+              },
+              onStateChange: (event) => {
+                // YT.PlayerState.PLAYING = 1
+                // Seek again on first play — more reliable than onReady
+                // because the video stream is actually loaded
+                if (!initialSeekDone && event.data === 1 && ytStart > 0) {
+                  initialSeekDone = true;
+                  ytPlayer.seekTo(ytStart, true);
+                }
               },
             },
           });
@@ -489,7 +504,13 @@ function getOrCreatePlayer(videoItem) {
         pause()   { whenReady(p => p.pauseVideo()); },
         mute()    { whenReady(p => p.mute()); },
         unmute()  { whenReady(p => p.unMute()); },
-        restart() { whenReady(p => { p.seekTo(ytStart, true); p.playVideo(); }); },
+        restart() {
+          whenReady(p => {
+            initialSeekDone = true; // don't double-seek after restart
+            p.seekTo(ytStart, true);
+            p.playVideo();
+          });
+        },
         destroy() {
           pendingCmds = [];
           if (ytPlayer && ytPlayer.destroy) try { ytPlayer.destroy(); } catch {}
@@ -526,10 +547,11 @@ function getOrCreatePlayer(videoItem) {
           type: 'twitch',
         };
       } else {
-        // Channels and VODs use the Twitch Player SDK for full control
+        // Channels and VODs use the Twitch Player SDK for full control.
+        // Because the SDK can share state between players of the same
+        // video, restart destroys and recreates the player to ensure
+        // each instance independently starts at its own time offset.
         const container = document.createElement('div');
-        const divId = 'tw-' + uid();
-        container.id = divId;
         container.style.cssText = 'width:100%;height:100%;background:#000;';
 
         let twitchPlayer = null;
@@ -541,35 +563,51 @@ function getOrCreatePlayer(videoItem) {
           else pendingCmds.push(fn);
         };
 
-        const tryInit = () => {
+        const buildOpts = () => {
+          const opts = {
+            width: '100%',
+            height: '100%',
+            parent: [host],
+            autoplay: true,
+            muted: true,
+          };
+          if (info.subtype === 'channel') {
+            opts.channel = info.value;
+          } else if (info.subtype === 'vod') {
+            opts.video = info.value;
+            if (twitchStart > 0) opts.time = secondsToHms(twitchStart);
+          }
+          return opts;
+        };
+
+        const styleIframe = () => {
+          const iframe = container.querySelector('iframe');
+          if (iframe) {
+            iframe.style.width = '100%';
+            iframe.style.height = '100%';
+            iframe.style.border = '0';
+          }
+        };
+
+        const initPlayer = () => {
+          ready = false;
+          twitchPlayer = null;
+          pendingCmds = [];
+          container.innerHTML = '';
+          const innerDiv = document.createElement('div');
+          innerDiv.id = 'tw-' + uid();
+          container.appendChild(innerDiv);
+
           loadTwitchSDK().then(() => {
-            if (!document.getElementById(divId)) {
-              setTimeout(tryInit, 250);
+            if (!container.isConnected) {
+              // Container not in DOM yet, retry
+              setTimeout(initPlayer, 250);
               return;
             }
-            const opts = {
-              width: '100%',
-              height: '100%',
-              parent: [host],
-              autoplay: true,
-              muted: true,
-            };
-            if (info.subtype === 'channel') {
-              opts.channel = info.value;
-            } else if (info.subtype === 'vod') {
-              opts.video = info.value;
-              if (twitchStart > 0) opts.time = secondsToHms(twitchStart);
-            }
-
-            twitchPlayer = new Twitch.Player(divId, opts);
+            twitchPlayer = new Twitch.Player(innerDiv.id, buildOpts());
             twitchPlayer.addEventListener(Twitch.Player.READY, () => {
               ready = true;
-              const iframe = container.querySelector('iframe');
-              if (iframe) {
-                iframe.style.width = '100%';
-                iframe.style.height = '100%';
-                iframe.style.border = '0';
-              }
+              styleIframe();
               for (const fn of pendingCmds) fn(twitchPlayer);
               pendingCmds = [];
             });
@@ -577,7 +615,7 @@ function getOrCreatePlayer(videoItem) {
             toast('Twitch SDK: ' + err.message, 'err');
           });
         };
-        tryInit();
+        initPlayer();
 
         player = {
           play()    { whenReady(p => p.play()); },
@@ -585,10 +623,9 @@ function getOrCreatePlayer(videoItem) {
           mute()    { whenReady(p => p.setMuted(true)); },
           unmute()  { whenReady(p => p.setMuted(false)); },
           restart() {
-            whenReady(p => {
-              p.seek(twitchStart);
-              p.play();
-            });
+            // Destroy and recreate — avoids shared-state issues
+            // when multiple players load the same video
+            initPlayer();
           },
           destroy() {
             pendingCmds = [];
