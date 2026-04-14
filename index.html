@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>MultiVideo</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div id="app" class="app sidebar-open">
+    <!-- Sidebar -->
+    <aside id="sidebar" class="sidebar">
+      <div class="sidebar-header">
+        <h1>MultiVideo</h1>
+        <button id="collapseBtn" class="icon-btn" title="Collapse sidebar (C)">&#x2B05;</button>
+      </div>
+
+      <section class="panel">
+        <h2>Add videos</h2>
+        <div id="dropZone" class="drop-zone">
+          <p>Drag &amp; drop video files here</p>
+          <p class="muted">or</p>
+          <div class="btn-row">
+            <button id="pickFilesBtn" class="btn">Choose files…</button>
+          </div>
+        </div>
+
+        <div class="url-row">
+          <input id="urlInput" type="text" placeholder="Paste YouTube / Twitch URL" />
+          <button id="addUrlBtn" class="btn">Add</button>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-header">
+          <h2>Loaded <span id="videoCount" class="count-badge">0</span></h2>
+          <button id="clearAllBtn" class="btn btn-subtle" title="Remove all">Clear</button>
+        </div>
+        <ul id="videoList" class="video-list"></ul>
+      </section>
+
+      <section class="panel">
+        <h2>Presets</h2>
+        <div class="preset-save-row">
+          <input id="presetNameInput" type="text" placeholder="Preset name" />
+          <button id="savePresetBtn" class="btn">Save</button>
+        </div>
+        <ul id="presetList" class="preset-list"></ul>
+        <div class="btn-row">
+          <button id="exportPresetsBtn" class="btn btn-subtle">Export all…</button>
+          <button id="importPresetsBtn" class="btn btn-subtle">Import…</button>
+          <input id="importFileInput" type="file" accept="application/json" hidden />
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2>About</h2>
+        <p class="muted small">
+          Tip: for the best experience serve this folder over
+          <code>localhost</code> (e.g. <code>python -m http.server</code>)
+          so file handles and Twitch embeds work.
+        </p>
+      </section>
+    </aside>
+
+    <!-- Main area -->
+    <main class="main">
+      <header id="topBar" class="top-bar">
+        <button id="toggleSidebarBtn" class="icon-btn" title="Toggle sidebar (C)">&#x2630;</button>
+
+        <div class="control-group">
+          <label class="lbl">Layout</label>
+          <select id="layoutSelect" class="select"></select>
+          <button id="prevLayoutBtn" class="icon-btn" title="Previous layout">&#x25C0;</button>
+          <button id="nextLayoutBtn" class="icon-btn" title="Next layout (L)">&#x25B6;</button>
+        </div>
+
+        <div class="control-group">
+          <button id="playAllBtn" class="btn" title="Play all (Space)">&#x25B6; Play all</button>
+          <button id="pauseAllBtn" class="btn" title="Pause all (Space)">&#x23F8; Pause all</button>
+          <button id="muteAllBtn" class="btn" title="Mute all (M)">&#x1F507; Mute all</button>
+          <button id="unmuteAllBtn" class="btn" title="Unmute all (M)">&#x1F509; Unmute all</button>
+          <button id="restartAllBtn" class="btn btn-subtle" title="Restart all">&#x21BB; Restart</button>
+        </div>
+
+        <div class="control-group cycle-group">
+          <label class="lbl">
+            <input id="autoCycleToggle" type="checkbox" /> Auto-cycle
+          </label>
+          <label class="lbl">
+            every
+            <input id="cycleIntervalInput" type="number" min="5" max="3600" step="1" value="30" />
+            s &plusmn;
+            <input id="cycleJitterInput" type="number" min="0" max="120" step="1" value="10" />
+            s
+          </label>
+          <span id="cycleStatus" class="muted small"></span>
+        </div>
+
+        <div class="control-group right">
+          <button id="fullscreenBtn" class="btn" title="Fullscreen (F)">&#x26F6; Fullscreen</button>
+        </div>
+      </header>
+
+      <section id="stage" class="stage" data-layout=""></section>
+
+      <div id="emptyState" class="empty-state">
+        <h2>No videos loaded</h2>
+        <p>Drop files into the sidebar, or paste a YouTube / Twitch URL.</p>
+      </div>
+    </main>
+  </div>
+
+  <div id="toastStack" class="toast-stack"></div>
+
+  <script src="app.js" type="module"></script>
+</body>
+</html>
