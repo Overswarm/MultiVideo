@@ -350,6 +350,42 @@ function handleDrop(files) {
   toast('Added ' + videoFiles.length + ' video(s)', 'ok');
 }
 
+// -- SDK loaders ------------------------------------------------------
+
+let _ytAPIPromise = null;
+function loadYouTubeAPI() {
+  if (_ytAPIPromise) return _ytAPIPromise;
+  if (window.YT && window.YT.Player) return Promise.resolve();
+  _ytAPIPromise = new Promise((resolve, reject) => {
+    const prev = window.onYouTubeIframeAPIReady;
+    window.onYouTubeIframeAPIReady = () => {
+      if (prev) prev();
+      resolve();
+    };
+    const tag = document.createElement('script');
+    tag.src = 'https://www.youtube.com/iframe_api';
+    tag.onerror = () => reject(new Error('Failed to load YouTube API'));
+    document.head.appendChild(tag);
+    setTimeout(() => reject(new Error('YouTube API load timeout')), 15000);
+  });
+  return _ytAPIPromise;
+}
+
+let _twitchSDKPromise = null;
+function loadTwitchSDK() {
+  if (_twitchSDKPromise) return _twitchSDKPromise;
+  if (window.Twitch && window.Twitch.Player) return Promise.resolve();
+  _twitchSDKPromise = new Promise((resolve, reject) => {
+    const tag = document.createElement('script');
+    tag.src = 'https://player.twitch.tv/js/embed/v1.js';
+    tag.onload = () => resolve();
+    tag.onerror = () => reject(new Error('Failed to load Twitch SDK'));
+    document.head.appendChild(tag);
+    setTimeout(() => reject(new Error('Twitch SDK load timeout')), 15000);
+  });
+  return _twitchSDKPromise;
+}
+
 // -- Player creation --------------------------------------------------
 
 function getOrCreatePlayer(videoItem) {
@@ -385,48 +421,81 @@ function getOrCreatePlayer(videoItem) {
     }
 
     case 'youtube': {
-      const iframe = document.createElement('iframe');
+      // Use the official YouTube IFrame Player API for reliable control
+      const wrapper = document.createElement('div');
+      wrapper.style.cssText = 'width:100%;height:100%;background:#000;';
+      const target = document.createElement('div');
+      const divId = 'yt-' + uid();
+      target.id = divId;
+      wrapper.appendChild(target);
+
       const vid = videoItem.videoId;
       const ytStart = videoItem.startTime || 0;
-      // Note: loop=1&playlist=ID causes YouTube to ignore the start= param,
-      // so we only add loop when there's no start offset.
-      const loopParams = ytStart > 0 ? '' : '&loop=1&playlist=' + vid;
-      iframe.src = 'https://www.youtube.com/embed/' + vid
-        + '?autoplay=1&mute=1&enablejsapi=1'
-        + loopParams
-        + '&playsinline=1&rel=0&modestbranding=1'
-        + (ytStart > 0 ? '&start=' + ytStart : '');
-      iframe.allow = 'autoplay; encrypted-media; fullscreen';
-      iframe.setAttribute('allowfullscreen', '');
-      iframe.setAttribute('frameborder', '0');
+      let ytPlayer = null;
+      let ready = false;
+      let pendingCmds = [];
 
-      const cmd = (func, args) => {
-        try {
-          iframe.contentWindow?.postMessage(
-            JSON.stringify({ event: 'command', func, args: args || [] }), '*'
-          );
-        } catch {}
+      const whenReady = (fn) => {
+        if (ready && ytPlayer) fn(ytPlayer);
+        else pendingCmds.push(fn);
       };
 
-      // Belt-and-suspenders: after iframe loads, also seek via postMessage
-      // in case the start= URL param is ignored
-      if (ytStart > 0) {
-        iframe.addEventListener('load', () => {
-          setTimeout(() => {
-            cmd('seekTo', [ytStart, true]);
-            cmd('playVideo');
-          }, 1500);
+      const tryInit = () => {
+        loadYouTubeAPI().then(() => {
+          // YT.Player needs the target in the DOM; retry if not yet attached
+          if (!document.getElementById(divId)) {
+            setTimeout(tryInit, 250);
+            return;
+          }
+          ytPlayer = new YT.Player(divId, {
+            videoId: vid,
+            width: '100%',
+            height: '100%',
+            playerVars: {
+              autoplay: 1,
+              mute: 1,
+              start: ytStart,
+              enablejsapi: 1,
+              playsinline: 1,
+              rel: 0,
+              modestbranding: 1,
+            },
+            events: {
+              onReady: () => {
+                ready = true;
+                const iframe = wrapper.querySelector('iframe');
+                if (iframe) {
+                  iframe.style.width = '100%';
+                  iframe.style.height = '100%';
+                  iframe.style.border = '0';
+                }
+                if (ytStart > 0) {
+                  ytPlayer.seekTo(ytStart, true);
+                  ytPlayer.playVideo();
+                }
+                for (const fn of pendingCmds) fn(ytPlayer);
+                pendingCmds = [];
+              },
+            },
+          });
+        }).catch(err => {
+          toast('YouTube API: ' + err.message, 'err');
         });
-      }
+      };
+      tryInit();
 
       player = {
-        play()    { cmd('playVideo'); },
-        pause()   { cmd('pauseVideo'); },
-        mute()    { cmd('mute'); },
-        unmute()  { cmd('unMute'); },
-        restart() { cmd('seekTo', [ytStart, true]); cmd('playVideo'); },
-        destroy() { iframe.src = ''; iframe.remove(); },
-        element: iframe,
+        play()    { whenReady(p => p.playVideo()); },
+        pause()   { whenReady(p => p.pauseVideo()); },
+        mute()    { whenReady(p => p.mute()); },
+        unmute()  { whenReady(p => p.unMute()); },
+        restart() { whenReady(p => { p.seekTo(ytStart, true); p.playVideo(); }); },
+        destroy() {
+          pendingCmds = [];
+          if (ytPlayer && ytPlayer.destroy) try { ytPlayer.destroy(); } catch {}
+          wrapper.remove();
+        },
+        element: wrapper,
         type: 'youtube',
       };
       break;
@@ -436,34 +505,100 @@ function getOrCreatePlayer(videoItem) {
       const info = videoItem.twitchInfo;
       const host = location.hostname || 'localhost';
       const twitchStart = videoItem.startTime || 0;
-      const twitchTimeParam = twitchStart > 0 ? '&time=' + secondsToHms(twitchStart) : '';
-      let src;
-      if (info.subtype === 'channel') {
-        src = 'https://player.twitch.tv/?channel=' + info.value + '&parent=' + host + '&muted=true&autoplay=true';
-      } else if (info.subtype === 'vod') {
-        src = 'https://player.twitch.tv/?video=' + info.value + '&parent=' + host + '&muted=true&autoplay=true' + twitchTimeParam;
-      } else if (info.subtype === 'clip') {
-        src = 'https://clips.twitch.tv/embed?clip=' + info.value + '&parent=' + host + '&autoplay=true&muted=true';
+
+      // Twitch clips don't work with the Player SDK — use iframe fallback
+      if (info.subtype === 'clip') {
+        const iframe = document.createElement('iframe');
+        const clipSrc = 'https://clips.twitch.tv/embed?clip=' + info.value + '&parent=' + host + '&autoplay=true&muted=true';
+        iframe.src = clipSrc;
+        iframe.allow = 'autoplay; encrypted-media; fullscreen';
+        iframe.setAttribute('allowfullscreen', '');
+        iframe.setAttribute('frameborder', '0');
+
+        player = {
+          play()    {},
+          pause()   {},
+          mute()    {},
+          unmute()  {},
+          restart() { iframe.src = ''; iframe.src = clipSrc; },
+          destroy() { iframe.src = ''; iframe.remove(); },
+          element: iframe,
+          type: 'twitch',
+        };
+      } else {
+        // Channels and VODs use the Twitch Player SDK for full control
+        const container = document.createElement('div');
+        const divId = 'tw-' + uid();
+        container.id = divId;
+        container.style.cssText = 'width:100%;height:100%;background:#000;';
+
+        let twitchPlayer = null;
+        let ready = false;
+        let pendingCmds = [];
+
+        const whenReady = (fn) => {
+          if (ready && twitchPlayer) fn(twitchPlayer);
+          else pendingCmds.push(fn);
+        };
+
+        const tryInit = () => {
+          loadTwitchSDK().then(() => {
+            if (!document.getElementById(divId)) {
+              setTimeout(tryInit, 250);
+              return;
+            }
+            const opts = {
+              width: '100%',
+              height: '100%',
+              parent: [host],
+              autoplay: true,
+              muted: true,
+            };
+            if (info.subtype === 'channel') {
+              opts.channel = info.value;
+            } else if (info.subtype === 'vod') {
+              opts.video = info.value;
+              if (twitchStart > 0) opts.time = secondsToHms(twitchStart);
+            }
+
+            twitchPlayer = new Twitch.Player(divId, opts);
+            twitchPlayer.addEventListener(Twitch.Player.READY, () => {
+              ready = true;
+              const iframe = container.querySelector('iframe');
+              if (iframe) {
+                iframe.style.width = '100%';
+                iframe.style.height = '100%';
+                iframe.style.border = '0';
+              }
+              for (const fn of pendingCmds) fn(twitchPlayer);
+              pendingCmds = [];
+            });
+          }).catch(err => {
+            toast('Twitch SDK: ' + err.message, 'err');
+          });
+        };
+        tryInit();
+
+        player = {
+          play()    { whenReady(p => p.play()); },
+          pause()   { whenReady(p => p.pause()); },
+          mute()    { whenReady(p => p.setMuted(true)); },
+          unmute()  { whenReady(p => p.setMuted(false)); },
+          restart() {
+            whenReady(p => {
+              p.seek(twitchStart);
+              p.play();
+            });
+          },
+          destroy() {
+            pendingCmds = [];
+            container.innerHTML = '';
+            container.remove();
+          },
+          element: container,
+          type: 'twitch',
+        };
       }
-
-      const iframe = document.createElement('iframe');
-      const baseSrc = src;
-      iframe.src = src;
-      iframe.allow = 'autoplay; encrypted-media; fullscreen';
-      iframe.setAttribute('allowfullscreen', '');
-      iframe.setAttribute('frameborder', '0');
-
-      // Twitch iframes have limited postMessage control — restart reloads the iframe
-      player = {
-        play()    {},
-        pause()   {},
-        mute()    {},
-        unmute()  {},
-        restart() { iframe.src = ''; iframe.src = baseSrc; },
-        destroy() { iframe.src = ''; iframe.remove(); },
-        element: iframe,
-        type: 'twitch',
-      };
       break;
     }
 
