@@ -413,6 +413,14 @@ function getOrCreatePlayer(videoItem) {
         mute()    { video.muted = true; },
         unmute()  { video.muted = false; },
         restart() { video.currentTime = fileStartTime; video.play().catch(() => {}); },
+        prepareRestart() {
+          return new Promise(resolve => {
+            video.pause();
+            video.currentTime = fileStartTime;
+            video.addEventListener('seeked', () => resolve(), { once: true });
+            setTimeout(resolve, 2000);
+          });
+        },
         destroy() { video.pause(); video.removeAttribute('src'); video.load(); video.remove(); },
         element: video,
         type: 'local',
@@ -452,7 +460,6 @@ function getOrCreatePlayer(videoItem) {
 
       const tryInit = () => {
         loadYouTubeAPI().then(() => {
-          // YT.Player needs the target in the DOM; retry if not yet attached
           if (!document.getElementById(divId)) {
             setTimeout(tryInit, 250);
             return;
@@ -474,7 +481,6 @@ function getOrCreatePlayer(videoItem) {
               onReady: () => {
                 ready = true;
                 styleIframe();
-                // Try seeking immediately
                 if (ytStart > 0) {
                   ytPlayer.seekTo(ytStart, true);
                   ytPlayer.playVideo();
@@ -483,9 +489,6 @@ function getOrCreatePlayer(videoItem) {
                 pendingCmds = [];
               },
               onStateChange: (event) => {
-                // YT.PlayerState.PLAYING = 1
-                // Seek again on first play — more reliable than onReady
-                // because the video stream is actually loaded
                 if (!initialSeekDone && event.data === 1 && ytStart > 0) {
                   initialSeekDone = true;
                   ytPlayer.seekTo(ytStart, true);
@@ -506,9 +509,20 @@ function getOrCreatePlayer(videoItem) {
         unmute()  { whenReady(p => p.unMute()); },
         restart() {
           whenReady(p => {
-            initialSeekDone = true; // don't double-seek after restart
+            initialSeekDone = true;
             p.seekTo(ytStart, true);
             p.playVideo();
+          });
+        },
+        prepareRestart() {
+          return new Promise(resolve => {
+            whenReady(p => {
+              initialSeekDone = true;
+              p.seekTo(ytStart, true);
+              p.pauseVideo();
+              setTimeout(resolve, 500);
+            });
+            setTimeout(resolve, 5000);
           });
         },
         destroy() {
@@ -527,117 +541,56 @@ function getOrCreatePlayer(videoItem) {
       const host = location.hostname || 'localhost';
       const twitchStart = videoItem.startTime || 0;
 
-      // Twitch clips don't work with the Player SDK — use iframe fallback
-      if (info.subtype === 'clip') {
-        const iframe = document.createElement('iframe');
-        const clipSrc = 'https://clips.twitch.tv/embed?clip=' + info.value + '&parent=' + host + '&autoplay=true&muted=true';
-        iframe.src = clipSrc;
-        iframe.allow = 'autoplay; encrypted-media; fullscreen';
-        iframe.setAttribute('allowfullscreen', '');
-        iframe.setAttribute('frameborder', '0');
+      // Use raw iframes for Twitch — fully independent instances.
+      // The Twitch Player SDK shares state between players of the same
+      // video, so multiple instances break. Raw iframes don't.
+      const buildSrc = (autoplay) => {
+        const ap = autoplay ? 'true' : 'false';
+        if (info.subtype === 'clip') {
+          return 'https://clips.twitch.tv/embed?clip=' + info.value + '&parent=' + host + '&autoplay=' + ap + '&muted=true';
+        } else if (info.subtype === 'channel') {
+          return 'https://player.twitch.tv/?channel=' + info.value + '&parent=' + host + '&muted=true&autoplay=' + ap;
+        } else if (info.subtype === 'vod') {
+          let src = 'https://player.twitch.tv/?video=' + info.value + '&parent=' + host + '&muted=true&autoplay=' + ap;
+          if (twitchStart > 0) src += '&time=' + secondsToHms(twitchStart);
+          return src;
+        }
+        return '';
+      };
 
-        player = {
-          play()    {},
-          pause()   {},
-          mute()    {},
-          unmute()  {},
-          restart() { iframe.src = ''; iframe.src = clipSrc; },
-          destroy() { iframe.src = ''; iframe.remove(); },
-          element: iframe,
-          type: 'twitch',
-        };
-      } else {
-        // Channels and VODs use the Twitch Player SDK for full control.
-        // Because the SDK can share state between players of the same
-        // video, restart destroys and recreates the player to ensure
-        // each instance independently starts at its own time offset.
-        const container = document.createElement('div');
-        container.style.cssText = 'width:100%;height:100%;background:#000;';
+      const iframe = document.createElement('iframe');
+      iframe.src = buildSrc(true);
+      iframe.allow = 'autoplay; encrypted-media; fullscreen';
+      iframe.setAttribute('allowfullscreen', '');
+      iframe.setAttribute('frameborder', '0');
 
-        let twitchPlayer = null;
-        let ready = false;
-        let pendingCmds = [];
+      let needsRebuild = false;
 
-        const whenReady = (fn) => {
-          if (ready && twitchPlayer) fn(twitchPlayer);
-          else pendingCmds.push(fn);
-        };
-
-        const buildOpts = () => {
-          const opts = {
-            width: '100%',
-            height: '100%',
-            parent: [host],
-            autoplay: true,
-            muted: true,
-          };
-          if (info.subtype === 'channel') {
-            opts.channel = info.value;
-          } else if (info.subtype === 'vod') {
-            opts.video = info.value;
-            if (twitchStart > 0) opts.time = secondsToHms(twitchStart);
+      player = {
+        play() {
+          if (needsRebuild) {
+            needsRebuild = false;
+            iframe.src = buildSrc(true);
           }
-          return opts;
-        };
-
-        const styleIframe = () => {
-          const iframe = container.querySelector('iframe');
-          if (iframe) {
-            iframe.style.width = '100%';
-            iframe.style.height = '100%';
-            iframe.style.border = '0';
-          }
-        };
-
-        const initPlayer = () => {
-          ready = false;
-          twitchPlayer = null;
-          pendingCmds = [];
-          container.innerHTML = '';
-          const innerDiv = document.createElement('div');
-          innerDiv.id = 'tw-' + uid();
-          container.appendChild(innerDiv);
-
-          loadTwitchSDK().then(() => {
-            if (!container.isConnected) {
-              // Container not in DOM yet, retry
-              setTimeout(initPlayer, 250);
-              return;
-            }
-            twitchPlayer = new Twitch.Player(innerDiv.id, buildOpts());
-            twitchPlayer.addEventListener(Twitch.Player.READY, () => {
-              ready = true;
-              styleIframe();
-              // Explicitly play — autoplay doesn't always work on recreated players
-              twitchPlayer.play();
-              for (const fn of pendingCmds) fn(twitchPlayer);
-              pendingCmds = [];
-            });
-          }).catch(err => {
-            toast('Twitch SDK: ' + err.message, 'err');
+        },
+        pause()   {},
+        mute()    {},
+        unmute()  {},
+        restart() {
+          iframe.src = '';
+          iframe.src = buildSrc(true);
+        },
+        prepareRestart() {
+          return new Promise(resolve => {
+            iframe.src = 'about:blank';
+            needsRebuild = true;
+            resolve();
           });
-        };
-        initPlayer();
-
-        player = {
-          play()    { whenReady(p => p.play()); },
-          pause()   { whenReady(p => p.pause()); },
-          mute()    { whenReady(p => p.setMuted(true)); },
-          unmute()  { whenReady(p => p.setMuted(false)); },
-          restart() {
-            // Destroy and recreate — avoids shared-state issues
-            // when multiple players load the same video
-            initPlayer();
-          },
-          destroy() {
-            pendingCmds = [];
-            container.innerHTML = '';
-            container.remove();
-          },
-          element: container,
-          type: 'twitch',
-        };
-      }
+        },
+        destroy() { iframe.src = ''; iframe.remove(); },
+        element: iframe,
+        type: 'twitch',
+      };
       break;
     }
 
@@ -830,22 +783,18 @@ function unmuteAll() {
   state.allMuted = false;
 }
 
-function restartAll() {
-  // Stagger Twitch player restarts — the SDK can't reliably create
-  // multiple players for the same video simultaneously
-  let twitchDelay = 0;
+async function restartAll() {
+  // Phase 1: Prepare all players (seek + pause, or blank Twitch iframes)
+  toast('Syncing...', 'info', 2000);
+  const promises = [];
   for (const [, p] of state.players) {
-    if (p.type === 'twitch') {
-      if (twitchDelay === 0) {
-        p.restart();
-      } else {
-        setTimeout(() => p.restart(), twitchDelay);
-      }
-      twitchDelay += 1500;
-    } else {
-      p.restart();
-    }
+    promises.push(p.prepareRestart());
   }
+  await Promise.allSettled(promises);
+
+  // Phase 2: Play all simultaneously — YouTube/local play instantly,
+  // Twitch iframes get their src set (autoplay=true) at the same moment
+  for (const [, p] of state.players) p.play();
   state.allPlaying = true;
 }
 
