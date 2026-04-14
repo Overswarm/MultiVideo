@@ -422,14 +422,29 @@ input[type="checkbox"] {
   outline: 1px solid #000;  /* tight hairline separator, can be 0 for pure seamless */
 }
 
+/* Force SDK wrapper divs (YouTube/Twitch containers) to fill the slot.
+   Use :not(.slot-overlay) to avoid hitting the hover overlay div. */
+.vid-slot > div:not(.slot-overlay) {
+  position: absolute !important;
+  inset: 0 !important;
+  width: 100% !important;
+  height: 100% !important;
+}
+
+/* Force all nested divs (SDK inner targets) to also fill */
+.vid-slot > div:not(.slot-overlay) > div {
+  width: 100% !important;
+  height: 100% !important;
+}
+
 .vid-slot video,
 .vid-slot iframe {
-  width: 100%;
-  height: 100%;
+  width: 100% !important;
+  height: 100% !important;
   object-fit: cover;
   display: block;
   background: #000;
-  border: 0;
+  border: 0 !important;
 }
 
 .vid-slot .slot-overlay {

@@ -608,6 +608,8 @@ function getOrCreatePlayer(videoItem) {
             twitchPlayer.addEventListener(Twitch.Player.READY, () => {
               ready = true;
               styleIframe();
+              // Explicitly play — autoplay doesn't always work on recreated players
+              twitchPlayer.play();
               for (const fn of pendingCmds) fn(twitchPlayer);
               pendingCmds = [];
             });
@@ -829,7 +831,21 @@ function unmuteAll() {
 }
 
 function restartAll() {
-  for (const [, p] of state.players) p.restart();
+  // Stagger Twitch player restarts — the SDK can't reliably create
+  // multiple players for the same video simultaneously
+  let twitchDelay = 0;
+  for (const [, p] of state.players) {
+    if (p.type === 'twitch') {
+      if (twitchDelay === 0) {
+        p.restart();
+      } else {
+        setTimeout(() => p.restart(), twitchDelay);
+      }
+      twitchDelay += 1500;
+    } else {
+      p.restart();
+    }
+  }
   state.allPlaying = true;
 }
 
