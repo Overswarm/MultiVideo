@@ -558,11 +558,20 @@ function getOrCreatePlayer(videoItem) {
         return '';
       };
 
-      const iframe = document.createElement('iframe');
+      let iframe = document.createElement('iframe');
       iframe.src = buildSrc(true);
       iframe.allow = 'autoplay; encrypted-media; fullscreen';
       iframe.setAttribute('allowfullscreen', '');
       iframe.setAttribute('frameborder', '0');
+
+      const makeNewIframe = (autoplay) => {
+        const f = document.createElement('iframe');
+        f.src = buildSrc(autoplay);
+        f.allow = 'autoplay; encrypted-media; fullscreen';
+        f.setAttribute('allowfullscreen', '');
+        f.setAttribute('frameborder', '0');
+        return f;
+      };
 
       let needsRebuild = false;
 
@@ -570,15 +579,27 @@ function getOrCreatePlayer(videoItem) {
         play() {
           if (needsRebuild) {
             needsRebuild = false;
-            iframe.src = buildSrc(true);
+            // Create a brand-new iframe element for full isolation —
+            // reusing the same element and just changing src lets the
+            // Twitch embed detect sibling players and pause them.
+            const old = iframe;
+            iframe = makeNewIframe(true);
+            if (old.parentNode) {
+              old.parentNode.replaceChild(iframe, old);
+            }
+            player.element = iframe;
           }
         },
         pause()   {},
         mute()    {},
         unmute()  {},
         restart() {
-          iframe.src = '';
-          iframe.src = buildSrc(true);
+          const old = iframe;
+          iframe = makeNewIframe(true);
+          if (old.parentNode) {
+            old.parentNode.replaceChild(iframe, old);
+          }
+          player.element = iframe;
         },
         prepareRestart() {
           return new Promise(resolve => {
@@ -763,8 +784,19 @@ function renderStage() {
 
 // -- Global controls --------------------------------------------------
 
-function playAll() {
-  for (const [, p] of state.players) p.play();
+async function playAll() {
+  // Play non-Twitch immediately
+  for (const [, p] of state.players) {
+    if (p.type !== 'twitch') p.play();
+  }
+  // Stagger Twitch players — their embeds fight over autoplay if loaded
+  // at the same instant
+  for (const [, p] of state.players) {
+    if (p.type === 'twitch') {
+      p.play();
+      await new Promise(r => setTimeout(r, 2000));
+    }
+  }
   state.allPlaying = true;
 }
 
@@ -792,9 +824,20 @@ async function restartAll() {
   }
   await Promise.allSettled(promises);
 
-  // Phase 2: Play all simultaneously — YouTube/local play instantly,
-  // Twitch iframes get their src set (autoplay=true) at the same moment
-  for (const [, p] of state.players) p.play();
+  // Phase 2: Play non-Twitch players immediately
+  for (const [, p] of state.players) {
+    if (p.type !== 'twitch') p.play();
+  }
+
+  // Stagger Twitch iframe rebuilds — Twitch embeds detect siblings and
+  // only let the last one autoplay.  Loading them one at a time avoids this.
+  for (const [, p] of state.players) {
+    if (p.type === 'twitch') {
+      p.play();
+      await new Promise(r => setTimeout(r, 2000));
+    }
+  }
+
   state.allPlaying = true;
 }
 
