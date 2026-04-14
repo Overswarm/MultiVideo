@@ -65,10 +65,30 @@ code {
   pointer-events: none;
 }
 
-.app.fullscreen-mode .top-bar { display: none; }
-.app.fullscreen-mode .sidebar { display: none; }
-.app.fullscreen-mode { grid-template-columns: 0 1fr; }
-.app.fullscreen-mode .main { grid-template-rows: 0 1fr; }
+/* Fullscreen: drop the grid entirely and use flexbox for reliability */
+.app.fullscreen-mode {
+  display: block !important;
+}
+.app.fullscreen-mode .sidebar {
+  display: none !important;
+}
+.app.fullscreen-mode .main {
+  display: flex !important;
+  flex-direction: column;
+  width: 100vw;
+  height: 100vh;
+}
+.app.fullscreen-mode .top-bar {
+  display: none !important;
+}
+.app.fullscreen-mode .stage {
+  flex: 1;
+  width: 100%;
+  min-height: 0;
+}
+.app.fullscreen-mode .empty-state {
+  inset: 0;
+}
 
 /* ================================================================
    Sidebar

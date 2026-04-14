@@ -653,7 +653,7 @@ function advanceCycle() {
 
 function toggleFullscreen() {
   if (!document.fullscreenElement) {
-    dom.app.requestFullscreen().then(() => {
+    document.documentElement.requestFullscreen().then(() => {
       state.isFullscreen = true;
       dom.app.classList.add('fullscreen-mode');
     }).catch(err => toast('Fullscreen error: ' + err.message, 'err'));
