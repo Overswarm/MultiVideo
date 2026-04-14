@@ -67,7 +67,8 @@ code {
 
 .app.fullscreen-mode .top-bar { display: none; }
 .app.fullscreen-mode .sidebar { display: none; }
-.app.fullscreen-mode { grid-template-columns: 0 1fr; grid-template-rows: 0 1fr; }
+.app.fullscreen-mode { grid-template-columns: 0 1fr; }
+.app.fullscreen-mode .main { grid-template-rows: 0 1fr; }
 
 /* ================================================================
    Sidebar
