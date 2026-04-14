@@ -388,8 +388,12 @@ function getOrCreatePlayer(videoItem) {
       const iframe = document.createElement('iframe');
       const vid = videoItem.videoId;
       const ytStart = videoItem.startTime || 0;
+      // Note: loop=1&playlist=ID causes YouTube to ignore the start= param,
+      // so we only add loop when there's no start offset.
+      const loopParams = ytStart > 0 ? '' : '&loop=1&playlist=' + vid;
       iframe.src = 'https://www.youtube.com/embed/' + vid
-        + '?autoplay=1&mute=1&enablejsapi=1&loop=1&playlist=' + vid
+        + '?autoplay=1&mute=1&enablejsapi=1'
+        + loopParams
         + '&playsinline=1&rel=0&modestbranding=1'
         + (ytStart > 0 ? '&start=' + ytStart : '');
       iframe.allow = 'autoplay; encrypted-media; fullscreen';
@@ -403,6 +407,17 @@ function getOrCreatePlayer(videoItem) {
           );
         } catch {}
       };
+
+      // Belt-and-suspenders: after iframe loads, also seek via postMessage
+      // in case the start= URL param is ignored
+      if (ytStart > 0) {
+        iframe.addEventListener('load', () => {
+          setTimeout(() => {
+            cmd('seekTo', [ytStart, true]);
+            cmd('playVideo');
+          }, 1500);
+        });
+      }
 
       player = {
         play()    { cmd('playVideo'); },
