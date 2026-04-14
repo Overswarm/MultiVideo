@@ -93,6 +93,37 @@ function toast(msg, type = 'info', duration = 3000) {
 
 const hasFSA = typeof window.showOpenFilePicker === 'function';
 
+// -- Time parsing -----------------------------------------------------
+
+// Parses time strings like "1h2m3s", "2m30s", "90", "5m", or plain seconds
+// Returns time in seconds, or 0 if no valid time found
+function parseTimeParam(value) {
+  if (!value) return 0;
+  // Pure number (seconds)
+  if (/^\d+$/.test(value)) return parseInt(value, 10);
+  // XhYmZs format (any combination)
+  let seconds = 0;
+  const h = value.match(/(\d+)h/);
+  const m = value.match(/(\d+)m/);
+  const s = value.match(/(\d+)s/);
+  if (h) seconds += parseInt(h[1], 10) * 3600;
+  if (m) seconds += parseInt(m[1], 10) * 60;
+  if (s) seconds += parseInt(s[1], 10);
+  return seconds;
+}
+
+// Converts seconds to "XhYmZs" string for Twitch embed URLs
+function secondsToHms(totalSec) {
+  const h = Math.floor(totalSec / 3600);
+  const m = Math.floor((totalSec % 3600) / 60);
+  const s = totalSec % 60;
+  let str = '';
+  if (h) str += h + 'h';
+  if (m) str += m + 'm';
+  str += s + 's';
+  return str;
+}
+
 // -- URL parsing ------------------------------------------------------
 
 function parseVideoUrl(urlStr) {
@@ -114,7 +145,12 @@ function parseVideoUrl(urlStr) {
       videoId = url.pathname.split('/shorts/')[1]?.split(/[/?]/)[0];
     }
     if (videoId) {
-      return { type: 'youtube', videoId, originalUrl: urlStr, name: 'YouTube: ' + videoId };
+      // Extract start time: ?t=90 or ?t=1m30s or &start=90
+      const startTime = parseTimeParam(url.searchParams.get('t'))
+                     || parseTimeParam(url.searchParams.get('start'))
+                     || 0;
+      const label = startTime ? ' @' + secondsToHms(startTime) : '';
+      return { type: 'youtube', videoId, startTime, originalUrl: urlStr, name: 'YouTube: ' + videoId + label };
     }
   }
 
@@ -122,25 +158,27 @@ function parseVideoUrl(urlStr) {
   if (url.hostname.includes('twitch.tv')) {
     if (url.hostname === 'clips.twitch.tv') {
       const slug = url.pathname.slice(1).split('/')[0];
-      if (slug) return { type: 'twitch', twitchInfo: { subtype: 'clip', value: slug }, originalUrl: urlStr, name: 'Twitch clip: ' + slug };
+      if (slug) return { type: 'twitch', twitchInfo: { subtype: 'clip', value: slug }, startTime: 0, originalUrl: urlStr, name: 'Twitch clip: ' + slug };
     }
     if (url.pathname.startsWith('/videos/')) {
       const vodId = url.pathname.split('/videos/')[1]?.split(/[/?]/)[0];
-      if (vodId) return { type: 'twitch', twitchInfo: { subtype: 'vod', value: vodId }, originalUrl: urlStr, name: 'Twitch VOD: ' + vodId };
+      const startTime = parseTimeParam(url.searchParams.get('t')) || 0;
+      const label = startTime ? ' @' + secondsToHms(startTime) : '';
+      if (vodId) return { type: 'twitch', twitchInfo: { subtype: 'vod', value: vodId }, startTime, originalUrl: urlStr, name: 'Twitch VOD: ' + vodId + label };
     }
     const clipMatch = url.pathname.match(/\/[^/]+\/clip\/([^/?]+)/);
     if (clipMatch) {
-      return { type: 'twitch', twitchInfo: { subtype: 'clip', value: clipMatch[1] }, originalUrl: urlStr, name: 'Twitch clip: ' + clipMatch[1] };
+      return { type: 'twitch', twitchInfo: { subtype: 'clip', value: clipMatch[1] }, startTime: 0, originalUrl: urlStr, name: 'Twitch clip: ' + clipMatch[1] };
     }
     const channel = url.pathname.slice(1).split('/')[0];
     if (channel) {
-      return { type: 'twitch', twitchInfo: { subtype: 'channel', value: channel }, originalUrl: urlStr, name: 'Twitch: ' + channel };
+      return { type: 'twitch', twitchInfo: { subtype: 'channel', value: channel }, startTime: 0, originalUrl: urlStr, name: 'Twitch: ' + channel };
     }
   }
 
   // Direct video URL
   if (/\.(mp4|webm|ogg|mov|m4v)(\?|$)/i.test(url.pathname)) {
-    return { type: 'direct-url', url: urlStr, originalUrl: urlStr, name: url.pathname.split('/').pop() };
+    return { type: 'direct-url', url: urlStr, startTime: 0, originalUrl: urlStr, name: url.pathname.split('/').pop() };
   }
 
   return null;
@@ -220,6 +258,7 @@ function addVideoItem(item) {
     twitchInfo: item.twitchInfo || null,
     url: item.url || null,
     originalUrl: item.originalUrl || null,
+    startTime: item.startTime || 0,
   };
   if (videoItem.file) {
     videoItem.objectUrl = URL.createObjectURL(videoItem.file);
@@ -328,12 +367,16 @@ function getOrCreatePlayer(videoItem) {
       video.loop = true;
       video.playsInline = true;
       video.preload = 'auto';
+      const fileStartTime = videoItem.startTime || 0;
+      if (fileStartTime > 0) {
+        video.addEventListener('loadedmetadata', () => { video.currentTime = fileStartTime; }, { once: true });
+      }
       player = {
         play()    { video.play().catch(() => {}); },
         pause()   { video.pause(); },
         mute()    { video.muted = true; },
         unmute()  { video.muted = false; },
-        restart() { video.currentTime = 0; video.play().catch(() => {}); },
+        restart() { video.currentTime = fileStartTime; video.play().catch(() => {}); },
         destroy() { video.pause(); video.removeAttribute('src'); video.load(); video.remove(); },
         element: video,
         type: 'local',
@@ -344,9 +387,11 @@ function getOrCreatePlayer(videoItem) {
     case 'youtube': {
       const iframe = document.createElement('iframe');
       const vid = videoItem.videoId;
+      const ytStart = videoItem.startTime || 0;
       iframe.src = 'https://www.youtube.com/embed/' + vid
         + '?autoplay=1&mute=1&enablejsapi=1&loop=1&playlist=' + vid
-        + '&playsinline=1&rel=0&modestbranding=1';
+        + '&playsinline=1&rel=0&modestbranding=1'
+        + (ytStart > 0 ? '&start=' + ytStart : '');
       iframe.allow = 'autoplay; encrypted-media; fullscreen';
       iframe.setAttribute('allowfullscreen', '');
       iframe.setAttribute('frameborder', '0');
@@ -364,7 +409,7 @@ function getOrCreatePlayer(videoItem) {
         pause()   { cmd('pauseVideo'); },
         mute()    { cmd('mute'); },
         unmute()  { cmd('unMute'); },
-        restart() { cmd('seekTo', [0, true]); },
+        restart() { cmd('seekTo', [ytStart, true]); cmd('playVideo'); },
         destroy() { iframe.src = ''; iframe.remove(); },
         element: iframe,
         type: 'youtube',
@@ -375,28 +420,31 @@ function getOrCreatePlayer(videoItem) {
     case 'twitch': {
       const info = videoItem.twitchInfo;
       const host = location.hostname || 'localhost';
+      const twitchStart = videoItem.startTime || 0;
+      const twitchTimeParam = twitchStart > 0 ? '&time=' + secondsToHms(twitchStart) : '';
       let src;
       if (info.subtype === 'channel') {
         src = 'https://player.twitch.tv/?channel=' + info.value + '&parent=' + host + '&muted=true&autoplay=true';
       } else if (info.subtype === 'vod') {
-        src = 'https://player.twitch.tv/?video=' + info.value + '&parent=' + host + '&muted=true&autoplay=true';
+        src = 'https://player.twitch.tv/?video=' + info.value + '&parent=' + host + '&muted=true&autoplay=true' + twitchTimeParam;
       } else if (info.subtype === 'clip') {
         src = 'https://clips.twitch.tv/embed?clip=' + info.value + '&parent=' + host + '&autoplay=true&muted=true';
       }
 
       const iframe = document.createElement('iframe');
+      const baseSrc = src;
       iframe.src = src;
       iframe.allow = 'autoplay; encrypted-media; fullscreen';
       iframe.setAttribute('allowfullscreen', '');
       iframe.setAttribute('frameborder', '0');
 
-      // Twitch iframes have limited postMessage control
+      // Twitch iframes have limited postMessage control — restart reloads the iframe
       player = {
         play()    {},
         pause()   {},
         mute()    {},
         unmute()  {},
-        restart() { iframe.src = iframe.src; },
+        restart() { iframe.src = ''; iframe.src = baseSrc; },
         destroy() { iframe.src = ''; iframe.remove(); },
         element: iframe,
         type: 'twitch',
@@ -681,7 +729,7 @@ async function savePreset(name) {
     layoutIndex: state.layoutIndex,
     autoCycle: { ...state.autoCycle },
     items: state.videos.map(v => {
-      const base = { type: v.type, name: v.name };
+      const base = { type: v.type, name: v.name, startTime: v.startTime || 0 };
       if (v.type === 'file')       { base.handleKey = v.handleKey; base.fileName = v.name; }
       if (v.type === 'youtube')    { base.videoId = v.videoId; base.originalUrl = v.originalUrl; }
       if (v.type === 'twitch')     { base.twitchInfo = v.twitchInfo; base.originalUrl = v.originalUrl; }
@@ -727,7 +775,7 @@ async function loadPreset(id) {
             if (perm === 'prompt') perm = await record.handle.requestPermission({ mode: 'read' });
             if (perm === 'granted') {
               const file = await record.handle.getFile();
-              addVideoItem({ type: 'file', file, handleKey: item.handleKey, name: file.name });
+              addVideoItem({ type: 'file', file, handleKey: item.handleKey, name: file.name, startTime: item.startTime || 0 });
               continue;
             }
           } catch {}
@@ -735,11 +783,11 @@ async function loadPreset(id) {
       }
       filesMissing++;
     } else if (item.type === 'youtube') {
-      addVideoItem({ type: 'youtube', videoId: item.videoId, originalUrl: item.originalUrl, name: item.name });
+      addVideoItem({ type: 'youtube', videoId: item.videoId, startTime: item.startTime || 0, originalUrl: item.originalUrl, name: item.name });
     } else if (item.type === 'twitch') {
-      addVideoItem({ type: 'twitch', twitchInfo: item.twitchInfo, originalUrl: item.originalUrl, name: item.name });
+      addVideoItem({ type: 'twitch', twitchInfo: item.twitchInfo, startTime: item.startTime || 0, originalUrl: item.originalUrl, name: item.name });
     } else if (item.type === 'direct-url') {
-      addVideoItem({ type: 'direct-url', url: item.url, originalUrl: item.originalUrl, name: item.name });
+      addVideoItem({ type: 'direct-url', url: item.url, startTime: item.startTime || 0, originalUrl: item.originalUrl, name: item.name });
     }
   }
 
