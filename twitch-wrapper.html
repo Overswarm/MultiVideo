@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html>
+<head>
+<style>
+  * { margin: 0; padding: 0; overflow: hidden; }
+  body, html { width: 100%; height: 100%; background: #000; }
+  #player { width: 100%; height: 100%; }
+  #player iframe { width: 100% !important; height: 100% !important; border: 0 !important; }
+</style>
+</head>
+<body>
+<div id="player"></div>
+<script src="https://player.twitch.tv/js/embed/v1.js"></script>
+<script>
+(function() {
+  var params = new URLSearchParams(location.search);
+  var type   = params.get('type');
+  var value  = params.get('value');
+  var time   = params.get('time') || '';
+  var auto   = params.get('autoplay') !== 'false';
+  var host   = location.hostname || 'localhost';
+
+  var player  = null;
+  var ready   = false;
+  var pending = [];
+
+  function exec(cmd) {
+    if (!player) return;
+    switch (cmd) {
+      case 'play':   player.play(); break;
+      case 'pause':  player.pause(); break;
+      case 'mute':   player.setMuted(true); break;
+      case 'unmute': player.setMuted(false); break;
+    }
+  }
+
+  if (type === 'clip') {
+    // Clips are not supported by the Twitch Player SDK — use raw embed
+    var f = document.createElement('iframe');
+    f.src = 'https://clips.twitch.tv/embed?clip=' + value +
+            '&parent=' + host + '&autoplay=' + auto + '&muted=true';
+    f.allow = 'autoplay; encrypted-media; fullscreen';
+    f.allowFullscreen = true;
+    f.style.cssText = 'width:100%;height:100%;border:0';
+    document.getElementById('player').appendChild(f);
+    ready = true;
+    window.parent.postMessage({ mvReady: true }, '*');
+  } else {
+    var opts = {
+      parent:   [host],
+      autoplay: auto,
+      muted:    true,
+      width:    '100%',
+      height:   '100%',
+    };
+    if (type === 'channel') opts.channel = value;
+    else { opts.video = value; if (time) opts.time = time; }
+
+    player = new Twitch.Player('player', opts);
+
+    player.addEventListener(Twitch.Player.READY, function() {
+      ready = true;
+      for (var i = 0; i < pending.length; i++) exec(pending[i]);
+      pending = [];
+      window.parent.postMessage({ mvReady: true }, '*');
+    });
+  }
+
+  window.addEventListener('message', function(e) {
+    if (!e.data || !e.data.mvCmd) return;
+    if (ready) exec(e.data.mvCmd);
+    else pending.push(e.data.mvCmd);
+  });
+})();
+</script>
+</body>
+</html>

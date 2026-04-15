@@ -311,7 +311,7 @@ async function pickFiles() {
         multiple: true,
         types: [{
           description: 'Video files',
-          accept: { 'video/*': ['.mp4','.webm','.ogg','.mov','.mkv','.avi','.m4v'] },
+          accept: { 'video/*': ['.mp4','.webm','.ogg','.mov','.mkv','.avi','.m4v','.wmv'] },
         }],
       });
       for (const handle of handles) {
@@ -338,7 +338,7 @@ async function pickFiles() {
 }
 
 function handleDrop(files) {
-  const videoExts = /\.(mp4|webm|ogg|mov|mkv|avi|m4v)$/i;
+  const videoExts = /\.(mp4|webm|ogg|mov|mkv|avi|m4v|wmv)$/i;
   const videoFiles = [...files].filter(f => f.type.startsWith('video/') || videoExts.test(f.name));
   if (videoFiles.length === 0) {
     toast('No video files found in drop', 'warn');
@@ -371,21 +371,6 @@ function loadYouTubeAPI() {
   return _ytAPIPromise;
 }
 
-let _twitchSDKPromise = null;
-function loadTwitchSDK() {
-  if (_twitchSDKPromise) return _twitchSDKPromise;
-  if (window.Twitch && window.Twitch.Player) return Promise.resolve();
-  _twitchSDKPromise = new Promise((resolve, reject) => {
-    const tag = document.createElement('script');
-    tag.src = 'https://player.twitch.tv/js/embed/v1.js';
-    tag.onload = () => resolve();
-    tag.onerror = () => reject(new Error('Failed to load Twitch SDK'));
-    document.head.appendChild(tag);
-    setTimeout(() => reject(new Error('Twitch SDK load timeout')), 15000);
-  });
-  return _twitchSDKPromise;
-}
-
 // -- Player creation --------------------------------------------------
 
 function getOrCreatePlayer(videoItem) {
@@ -407,6 +392,11 @@ function getOrCreatePlayer(videoItem) {
       if (fileStartTime > 0) {
         video.addEventListener('loadedmetadata', () => { video.currentTime = fileStartTime; }, { once: true });
       }
+      video.addEventListener('error', () => {
+        const isWmv = /\.wmv$/i.test(videoItem.name || '');
+        const hint = isWmv ? ' (Chrome does not support WMV — try converting to MP4)' : ' (unsupported format or codec)';
+        toast('Cannot play: ' + videoItem.name + hint, 'warn', 6000);
+      });
       player = {
         play()    { video.play().catch(() => {}); },
         pause()   { video.pause(); },
@@ -538,67 +528,57 @@ function getOrCreatePlayer(videoItem) {
 
     case 'twitch': {
       const info = videoItem.twitchInfo;
-      const host = location.hostname || 'localhost';
       const twitchStart = videoItem.startTime || 0;
 
-      // Use raw iframes for Twitch — fully independent instances.
-      // The Twitch Player SDK shares state between players of the same
-      // video, so multiple instances break. Raw iframes don't.
-      const buildSrc = (autoplay) => {
-        const ap = autoplay ? 'true' : 'false';
-        if (info.subtype === 'clip') {
-          return 'https://clips.twitch.tv/embed?clip=' + info.value + '&parent=' + host + '&autoplay=' + ap + '&muted=true';
-        } else if (info.subtype === 'channel') {
-          return 'https://player.twitch.tv/?channel=' + info.value + '&parent=' + host + '&muted=true&autoplay=' + ap;
-        } else if (info.subtype === 'vod') {
-          let src = 'https://player.twitch.tv/?video=' + info.value + '&parent=' + host + '&muted=true&autoplay=' + ap;
-          if (twitchStart > 0) src += '&time=' + secondsToHms(twitchStart);
-          return src;
-        }
-        return '';
+      // Each Twitch player lives inside its own twitch-wrapper.html iframe.
+      // The wrapper loads the Twitch Player SDK in an isolated browsing
+      // context, which prevents the cross-embed autoplay interference that
+      // happens when multiple Twitch players share the same page.  We
+      // communicate with the wrapper via postMessage for play/pause/mute.
+      const buildWrapperSrc = (autoplay) => {
+        let src = 'twitch-wrapper.html'
+                + '?type='     + encodeURIComponent(info.subtype)
+                + '&value='    + encodeURIComponent(info.value)
+                + '&autoplay=' + (autoplay ? 'true' : 'false');
+        if (twitchStart > 0) src += '&time=' + secondsToHms(twitchStart);
+        return src;
       };
 
-      let iframe = document.createElement('iframe');
-      iframe.src = buildSrc(true);
-      iframe.allow = 'autoplay; encrypted-media; fullscreen';
-      iframe.setAttribute('allowfullscreen', '');
-      iframe.setAttribute('frameborder', '0');
-
-      const makeNewIframe = (autoplay) => {
+      const makeWrapper = (autoplay) => {
         const f = document.createElement('iframe');
-        f.src = buildSrc(autoplay);
+        f.src = buildWrapperSrc(autoplay);
         f.allow = 'autoplay; encrypted-media; fullscreen';
         f.setAttribute('allowfullscreen', '');
         f.setAttribute('frameborder', '0');
         return f;
       };
 
+      let iframe = makeWrapper(true);
       let needsRebuild = false;
+
+      const sendCmd = (cmd) => {
+        try { iframe.contentWindow.postMessage({ mvCmd: cmd }, '*'); } catch {}
+      };
 
       player = {
         play() {
           if (needsRebuild) {
             needsRebuild = false;
-            // Create a brand-new iframe element for full isolation —
-            // reusing the same element and just changing src lets the
-            // Twitch embed detect sibling players and pause them.
             const old = iframe;
-            iframe = makeNewIframe(true);
-            if (old.parentNode) {
-              old.parentNode.replaceChild(iframe, old);
-            }
+            iframe = makeWrapper(true);
+            if (old.parentNode) old.parentNode.replaceChild(iframe, old);
             player.element = iframe;
+          } else {
+            sendCmd('play');
           }
         },
-        pause()   {},
-        mute()    {},
-        unmute()  {},
+        pause()  { sendCmd('pause'); },
+        mute()   { sendCmd('mute'); },
+        unmute() { sendCmd('unmute'); },
         restart() {
           const old = iframe;
-          iframe = makeNewIframe(true);
-          if (old.parentNode) {
-            old.parentNode.replaceChild(iframe, old);
-          }
+          iframe = makeWrapper(true);
+          if (old.parentNode) old.parentNode.replaceChild(iframe, old);
           player.element = iframe;
         },
         prepareRestart() {
@@ -784,19 +764,8 @@ function renderStage() {
 
 // -- Global controls --------------------------------------------------
 
-async function playAll() {
-  // Play non-Twitch immediately
-  for (const [, p] of state.players) {
-    if (p.type !== 'twitch') p.play();
-  }
-  // Stagger Twitch players — their embeds fight over autoplay if loaded
-  // at the same instant
-  for (const [, p] of state.players) {
-    if (p.type === 'twitch') {
-      p.play();
-      await new Promise(r => setTimeout(r, 2000));
-    }
-  }
+function playAll() {
+  for (const [, p] of state.players) p.play();
   state.allPlaying = true;
 }
 
@@ -816,7 +785,7 @@ function unmuteAll() {
 }
 
 async function restartAll() {
-  // Phase 1: Prepare all players (seek + pause, or blank Twitch iframes)
+  // Phase 1: Prepare all players (seek + pause, or blank Twitch wrappers)
   toast('Syncing...', 'info', 2000);
   const promises = [];
   for (const [, p] of state.players) {
@@ -824,20 +793,10 @@ async function restartAll() {
   }
   await Promise.allSettled(promises);
 
-  // Phase 2: Play non-Twitch players immediately
-  for (const [, p] of state.players) {
-    if (p.type !== 'twitch') p.play();
-  }
-
-  // Stagger Twitch iframe rebuilds — Twitch embeds detect siblings and
-  // only let the last one autoplay.  Loading them one at a time avoids this.
-  for (const [, p] of state.players) {
-    if (p.type === 'twitch') {
-      p.play();
-      await new Promise(r => setTimeout(r, 2000));
-    }
-  }
-
+  // Phase 2: Play all simultaneously.  YouTube/local resume instantly;
+  // Twitch wrappers reload (each wrapper is its own isolated context, so
+  // they no longer fight over autoplay).
+  for (const [, p] of state.players) p.play();
   state.allPlaying = true;
 }
 
