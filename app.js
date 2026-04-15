@@ -546,10 +546,19 @@ function getOrCreatePlayer(videoItem) {
 
       const makeWrapper = (autoplay) => {
         const f = document.createElement('iframe');
-        f.src = buildWrapperSrc(autoplay);
         f.allow = 'autoplay; encrypted-media; fullscreen';
         f.setAttribute('allowfullscreen', '');
         f.setAttribute('frameborder', '0');
+        // Defer the src until after the iframe is in the DOM and laid
+        // out — Twitch refuses to autoplay if the player is "not visible"
+        // (zero size) when its SDK initialises.
+        requestAnimationFrame(() => {
+          requestAnimationFrame(() => {
+            if (!f.src || f.src === 'about:blank') {
+              f.src = buildWrapperSrc(autoplay);
+            }
+          });
+        });
         return f;
       };
 
@@ -680,9 +689,11 @@ function renderStage() {
   const n = state.videos.length;
   if (n === 0) {
     for (const [, player] of state.players) {
-      getHiddenContainer().appendChild(player.element);
+      if (player.element.parentNode !== getHiddenContainer()) {
+        getHiddenContainer().appendChild(player.element);
+      }
     }
-    dom.stage.innerHTML = '';
+    while (dom.stage.firstChild) dom.stage.removeChild(dom.stage.firstChild);
     return;
   }
 
@@ -690,75 +701,93 @@ function renderStage() {
 
   // Determine which videos are visible in current rotation
   const visibleItems = [];
+  const visibleIds = new Set();
   for (let i = 0; i < slotCount; i++) {
     const videoIdx = (state.rotationOffset + i) % n;
-    visibleItems.push(state.videos[videoIdx]);
+    const item = state.videos[videoIdx];
+    visibleItems.push(item);
+    visibleIds.add(item.id);
   }
 
-  // Move ALL players to hidden container so clearing the stage won't destroy them
-  for (const [, player] of state.players) {
-    if (player.element.parentNode && player.element.parentNode !== getHiddenContainer()) {
+  // Index existing slots by their video ID so we can re-use them
+  const existingSlots = new Map();
+  for (const slot of Array.from(dom.stage.children)) {
+    const id = slot.dataset.videoId;
+    if (id) existingSlots.set(id, slot);
+  }
+
+  // Move only NON-visible players to the hidden container.  Visible
+  // players keep their iframes in their slots — important for Twitch,
+  // whose embeds pause themselves the moment they detect they aren't
+  // visible (zero size, opacity:0, etc).
+  for (const [id, player] of state.players) {
+    if (!visibleIds.has(id) && player.element.parentNode !== getHiddenContainer()) {
       getHiddenContainer().appendChild(player.element);
     }
   }
 
-  // Clear stage of overlay / slot divs
-  dom.stage.innerHTML = '';
-
-  // Build slots
+  // Build (or reuse) slots in the order dictated by the current layout
   for (const item of visibleItems) {
-    const slot = document.createElement('div');
-    slot.className = 'vid-slot';
+    let slot = existingSlots.get(item.id);
+    if (!slot) {
+      slot = document.createElement('div');
+      slot.className = 'vid-slot';
+      slot.dataset.videoId = item.id;
 
-    const player = getOrCreatePlayer(item);
-    if (!player) continue;
+      const player = getOrCreatePlayer(item);
+      if (!player) continue;
 
-    slot.appendChild(player.element);
+      slot.appendChild(player.element);
 
-    // Hover overlay
-    const overlay = document.createElement('div');
-    overlay.className = 'slot-overlay';
+      const overlay = document.createElement('div');
+      overlay.className = 'slot-overlay';
 
-    const header = document.createElement('div');
-    header.className = 'slot-header';
-    const title = document.createElement('span');
-    title.className = 'slot-title';
-    title.textContent = item.name;
-    header.appendChild(title);
+      const header = document.createElement('div');
+      header.className = 'slot-header';
+      const title = document.createElement('span');
+      title.className = 'slot-title';
+      title.textContent = item.name;
+      header.appendChild(title);
 
-    const footer = document.createElement('div');
-    footer.className = 'slot-footer';
+      const footer = document.createElement('div');
+      footer.className = 'slot-footer';
 
-    // Solo audio button
-    const soloBtn = document.createElement('button');
-    soloBtn.textContent = '\uD83D\uDD09 Solo audio';
-    soloBtn.onclick = () => {
-      for (const [otherId, otherPlayer] of state.players) {
-        if (otherId === item.id) otherPlayer.unmute();
-        else otherPlayer.mute();
-      }
-      state.allMuted = false;
-      toast('Audio: ' + item.name, 'ok');
-    };
-    footer.appendChild(soloBtn);
+      const soloBtn = document.createElement('button');
+      soloBtn.textContent = '\uD83D\uDD09 Solo audio';
+      soloBtn.onclick = () => {
+        for (const [otherId, otherPlayer] of state.players) {
+          if (otherId === item.id) otherPlayer.unmute();
+          else otherPlayer.mute();
+        }
+        state.allMuted = false;
+        toast('Audio: ' + item.name, 'ok');
+      };
+      footer.appendChild(soloBtn);
 
-    // Per-video play/pause
-    const ppBtn = document.createElement('button');
-    ppBtn.textContent = '\u23EF';
-    ppBtn.title = 'Play / Pause';
-    ppBtn.onclick = () => {
-      const el = player.element;
-      if (el.paused !== undefined) {
-        el.paused ? player.play() : player.pause();
-      }
-    };
-    footer.appendChild(ppBtn);
+      const ppBtn = document.createElement('button');
+      ppBtn.textContent = '\u23EF';
+      ppBtn.title = 'Play / Pause';
+      ppBtn.onclick = () => {
+        const el = player.element;
+        if (el.paused !== undefined) {
+          el.paused ? player.play() : player.pause();
+        }
+      };
+      footer.appendChild(ppBtn);
 
-    overlay.appendChild(header);
-    overlay.appendChild(footer);
-    slot.appendChild(overlay);
+      overlay.appendChild(header);
+      overlay.appendChild(footer);
+      slot.appendChild(overlay);
+    }
 
+    // appendChild moves the slot if it's already a child — preserves
+    // the iframe inside without ever detaching it from the document
     dom.stage.appendChild(slot);
+  }
+
+  // Remove any stale slots whose video is no longer visible
+  for (const [id, slot] of existingSlots) {
+    if (!visibleIds.has(id)) slot.remove();
   }
 }
 

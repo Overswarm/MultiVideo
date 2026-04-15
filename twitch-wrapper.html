@@ -3,9 +3,9 @@
 <head>
 <style>
   * { margin: 0; padding: 0; overflow: hidden; }
-  body, html { width: 100%; height: 100%; background: #000; }
-  #player { width: 100%; height: 100%; }
-  #player iframe { width: 100% !important; height: 100% !important; border: 0 !important; }
+  body, html { width: 100%; height: 100%; background: #000; visibility: visible !important; }
+  #player { width: 100%; height: 100%; visibility: visible !important; }
+  #player iframe { width: 100% !important; height: 100% !important; border: 0 !important; visibility: visible !important; }
 </style>
 </head>
 <body>
@@ -20,18 +20,43 @@
   var auto   = params.get('autoplay') !== 'false';
   var host   = location.hostname || 'localhost';
 
-  var player  = null;
-  var ready   = false;
-  var pending = [];
+  var player           = null;
+  var ready            = false;
+  var pending          = [];
+  var intendedPlaying  = auto;
+  var retryCount       = 0;
+  var maxRetries       = 6;
+  var retryTimer       = null;
 
   function exec(cmd) {
     if (!player) return;
     switch (cmd) {
-      case 'play':   player.play(); break;
-      case 'pause':  player.pause(); break;
-      case 'mute':   player.setMuted(true); break;
-      case 'unmute': player.setMuted(false); break;
+      case 'play':
+        intendedPlaying = true;
+        retryCount = 0;
+        try { player.play(); } catch (e) {}
+        break;
+      case 'pause':
+        intendedPlaying = false;
+        if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; }
+        try { player.pause(); } catch (e) {}
+        break;
+      case 'mute':   try { player.setMuted(true);  } catch (e) {} break;
+      case 'unmute': try { player.setMuted(false); } catch (e) {} break;
     }
+  }
+
+  function scheduleRetry() {
+    if (!intendedPlaying || retryCount >= maxRetries) return;
+    if (retryTimer) clearTimeout(retryTimer);
+    // Randomised back-off so multiple wrappers don't all retry at the
+    // same instant (and re-trigger Twitch's "only one player" coordination)
+    var delay = 300 + retryCount * 400 + Math.random() * 600;
+    retryTimer = setTimeout(function() {
+      retryTimer = null;
+      retryCount++;
+      try { player.play(); } catch (e) {}
+    }, delay);
   }
 
   if (type === 'clip') {
@@ -63,6 +88,17 @@
       for (var i = 0; i < pending.length; i++) exec(pending[i]);
       pending = [];
       window.parent.postMessage({ mvReady: true }, '*');
+    });
+
+    // When Twitch unilaterally pauses us (e.g. because another embed on
+    // the page started playing), retry play() with back-off — but only
+    // if the user actually wants this player to be playing.
+    player.addEventListener(Twitch.Player.PAUSE, function() {
+      if (intendedPlaying) scheduleRetry();
+    });
+
+    player.addEventListener(Twitch.Player.PLAY, function() {
+      retryCount = 0;
     });
   }
 
