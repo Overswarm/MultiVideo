@@ -20,7 +20,7 @@ If you just want to try it quickly, you can open `index.html` directly in Chrome
 
 ## Features
 
-- **Multiple simultaneous videos** — local files (drag & drop or file picker) and URLs (YouTube, Twitch, direct video links)
+- **Multiple simultaneous videos** — local files (drag & drop or file picker) and URLs (YouTube, Twitch, direct video links). Note: Twitch doesn't play nice with multiple embed. If you have more than one, it is advised you download the file and run it locally.
 - **13 layout presets** — 1×1 through 4×4 grids, theater modes, picture-in-picture, 1-top + N-bottom, center + surround
 - **Auto-cycle** — when more videos are loaded than the layout has slots, automatically rotates through them on a configurable interval with ±N second jitter
 - **Global controls** — Play all, Pause all, Mute all, Unmute all, Restart all
